@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Popcorn Physics Simulator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+        .gauge-bar {
+            transition: width 0.2s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center h-screen w-screen">
+
+    <div id="simulation-container" class="w-full max-w-4xl h-[60vh] md:h-[65vh] bg-gray-800 rounded-2xl shadow-2xl overflow-hidden border-4 border-gray-700 relative">
+        <!-- The Matter.js canvas will be inserted here -->
+    </div>
+
+    <div class="w-full max-w-4xl mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 px-4">
+        <!-- Controls -->
+        <div class="flex justify-center items-center space-x-4">
+            <button id="microwave-button" class="w-40 bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold py-3 px-6 rounded-lg shadow-lg transition-all transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-yellow-400">
+                Microwave ON
+            </button>
+            <button id="refrigerator-button" class="w-40 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition-all transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-400">
+                Fridge OFF
+            </button>
+        </div>
+        <!-- Gauges -->
+        <div class="space-y-3">
+            <!-- Kernel Temp Gauge -->
+            <div>
+                <label class="text-sm font-medium text-gray-400">Avg. Kernel Temperature</label>
+                <div class="w-full bg-gray-700 rounded-full h-6 relative overflow-hidden border-2 border-gray-600">
+                    <div id="kernel-temp-bar" class="gauge-bar bg-gradient-to-r from-blue-500 to-red-500 h-full rounded-full"></div>
+                    <div class="absolute inset-0 w-full h-full flex items-center justify-center">
+                        <span id="kernel-temp-text" class="text-xs font-bold text-white">0°</span>
+                    </div>
+                    <div class="absolute top-0 bottom-0 border-l-2 border-white" style="left: 100%;"> <!-- Pop line -->
+                        <span class="absolute -top-5 -ml-4 text-xs text-white">Pop!</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Ambient Temp Gauge -->
+            <div>
+                <label class="text-sm font-medium text-gray-400">Ambient Air Temperature</label>
+                <div class="w-full bg-gray-700 rounded-full h-6 relative overflow-hidden border-2 border-gray-600">
+                    <div id="ambient-temp-bar" class="gauge-bar bg-green-500 h-full rounded-full"></div>
+                     <div class="absolute inset-0 w-full h-full flex items-center justify-center">
+                        <span id="ambient-temp-text" class="text-xs font-bold text-white">20°</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Temperature Sliders -->
+        <div class="space-y-3">
+            <div>
+                <label for="fridge-temp-slider" class="text-sm font-medium text-gray-400">Fridge Temperature (<span id="fridge-temp-value">-5</span>°C)</label>
+                <input id="fridge-temp-slider" type="range" min="-100" max="0" value="-5" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Alias Matter.js modules
+        const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Mouse, MouseConstraint, Query, Vertices } = Matter;
+
+        // --- Configuration ---
+        const KERNEL_SIZE = 5;
+        const POPCORN_PARTICLE_SIZE = 4;
+        const BOILING_POINT = 100;
+        const AMBIENT_TEMP_INITIAL = 20;
+        const HEATING_RATE = 0.2;
+        const COOLING_RATE = 0.005;
+        const HEAT_TRANSFER_RATE = 0.0001;
+        const STEAM_PER_POP = 9;
+        const STEAM_LIFESPAN_MS = 20000; 
+
+        const COLORS = {
+            BACKGROUND: '#1f2937', POT: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
+            POPCORN: '#fef3c7', STROKE: '#11182b', STEAM: 'rgba(239, 246, 255, 0.8)',
+            STEAM_STROKE: 'rgba(209, 213, 219, 0.6)',
+            REFRIGERATOR: '#a5f3fc', WATER_DROP: '#60a5fa',
+            WET_POPCORN: '#d97706',
+            ICE: '#e0f2fe'
+        };
+        
+        const COLLISION = {
+            WALL:         0x0001,
+            POPCORN:      0x0002,
+            STEAM:        0x0004,
+            REFRIGERATOR: 0x0008,
+            KERNEL:       0x0010,
+            DROPLET:      0x0020,
+            ICE:          0x0040
+        };
+
+        // --- State ---
+        let isMicrowaveOn = true;
+        let isRefrigeratorOn = false;
+        let ambientTemperature = AMBIENT_TEMP_INITIAL;
+        let refrigeratorTemperature = -5;
+        let steamParticles = [];
+        let condensedSteamCount = 0;
+        let boundaryElements = []; 
+        let steamToCondenseQueue = new Set();
+        let waterToRemoveQueue = new Set();
+        let waterToFreezeQueue = new Set();
+
+        // --- UI Elements ---
+        const microwaveButton = document.getElementById('microwave-button');
+        const refrigeratorButton = document.getElementById('refrigerator-button');
+        const kernelTempBar = document.getElementById('kernel-temp-bar');
+        const kernelTempText = document.getElementById('kernel-temp-text');
+        const ambientTempBar = document.getElementById('ambient-temp-bar');
+        const ambientTempText = document.getElementById('ambient-temp-text');
+        const fridgeTempSlider = document.getElementById('fridge-temp-slider');
+        const fridgeTempValue = document.getElementById('fridge-temp-value');
+
+        // --- Matter.js Setup ---
+        const container = document.getElementById('simulation-container');
+        const engine = Engine.create();
+        const world = engine.world;
+        engine.gravity.y = 0; // We manage gravity manually per-body type
+
+        const render = Render.create({
+            element: container, engine: engine,
+            options: {
+                width: container.clientWidth, height: container.clientHeight,
+                wireframes: false, background: COLORS.BACKGROUND, showAngleIndicator: false
+            }
+        });
+
+        // --- Create World Objects ---
+        function createKernel(x, y) {
+            const kernel = Body.create({ 
+                parts: [
+                    Bodies.rectangle(x, y, KERNEL_SIZE * 3, KERNEL_SIZE * 3, { isSensor: true, render: { visible: false } }),
+                    ...Array.from({length: 9}, (_, i) => {
+                        const row = Math.floor(i / 3) - 1;
+                        const col = (i % 3) - 1;
+                        const isWater = row === 0 && col === 0;
+                        return Bodies.rectangle(x + col * KERNEL_SIZE, y + row * KERNEL_SIZE, KERNEL_SIZE, KERNEL_SIZE, {
+                            render: { fillStyle: isWater ? COLORS.WATER_COLD : COLORS.CORN, strokeStyle: COLORS.STROKE, lineWidth: 1 }
+                        });
+                    })
+                ],
+                friction: 0.5, restitution: 0.1, density: 0.01,
+                collisionFilter: { 
+                    category: COLLISION.KERNEL,
+                    mask: COLLISION.WALL | COLLISION.REFRIGERATOR | COLLISION.POPCORN | COLLISION.KERNEL | COLLISION.DROPLET | COLLISION.ICE
+                }
+            });
+            kernel.isKernel = true; kernel.isPopped = false; kernel.temperature = AMBIENT_TEMP_INITIAL;
+            return kernel;
+        }
+
+        function createPopcorn(x, y, initialTemp) {
+            const parts = [];
+            const mainBody = Bodies.rectangle(x, y, 9 * POPCORN_PARTICLE_SIZE, 9 * POPCORN_PARTICLE_SIZE, { isSensor: true, render: { visible: false } });
+            for (let i = 0; i < 25; i++) {
+                const offsetX = (Math.random() - 0.5) * 9 * POPCORN_PARTICLE_SIZE * 0.8;
+                const offsetY = (Math.random() - 0.5) * 9 * POPCORN_PARTICLE_SIZE * 0.8;
+                const radius = POPCORN_PARTICLE_SIZE * (1.5 + Math.random());
+                parts.push(Bodies.circle(x + offsetX, y + offsetY, radius, { render: { fillStyle: COLORS.POPCORN, strokeStyle: COLORS.CORN, lineWidth: 2 } }));
+            }
+            const popcorn = Body.create({ 
+                parts: [mainBody, ...parts], friction: 0.4, restitution: 0.3, density: 0.001,
+                collisionFilter: {
+                    category: COLLISION.POPCORN,
+                    mask: COLLISION.WALL | COLLISION.REFRIGERATOR | COLLISION.POPCORN | COLLISION.KERNEL | COLLISION.DROPLET | COLLISION.ICE
+                }
+            });
+            popcorn.isPopped = true; 
+            popcorn.temperature = initialTemp;
+            popcorn.isGettingWet = false;
+            popcorn.isWet = false;
+            return popcorn;
+        }
+        
+        function createSteam(x, y) {
+            const parts = [];
+            const steamCloudSize = 16;
+            const mainBody = Bodies.rectangle(x, y, steamCloudSize, steamCloudSize, { isSensor: true, render: { visible: false } });
+            
+            for (let i = 0; i < 12; i++) {
+                const offsetX = (Math.random() - 0.5) * steamCloudSize * 1.2;
+                const offsetY = (Math.random() - 0.5) * steamCloudSize * 1.2;
+                const radius = (POPCORN_PARTICLE_SIZE * 0.9) * (1.5 + Math.random());
+                parts.push(Bodies.circle(x + offsetX, y + offsetY, radius, { 
+                    render: { 
+                        fillStyle: COLORS.STEAM, 
+                        strokeStyle: COLORS.STEAM_STROKE, 
+                        lineWidth: 1 
+                    } 
+                }));
+            }
+
+            const steam = Body.create({
+                parts: [mainBody, ...parts],
+                friction: 0,
+                frictionStatic: 0,
+                frictionAir: 0.02,
+                restitution: 0.2,
+                collisionFilter: {
+                    category: COLLISION.STEAM,
+                    mask: COLLISION.WALL | COLLISION.REFRIGERATOR
+                }
+            });
+
+            steam.isSteam = true;
+            steam.createdAt = Date.now();
+            steam.isCondensing = false;
+            Body.setDensity(steam, 0.0001);
+            return steam;
+        }
+        
+        function createWaterDroplet(x, y) {
+            const droplet = Bodies.circle(x, y, 4, {
+                restitution: 0.6, friction: 0.1, density: 0.01,
+                render: { fillStyle: COLORS.WATER_DROP },
+                collisionFilter: {
+                    category: COLLISION.DROPLET,
+                    mask: COLLISION.WALL | COLLISION.REFRIGERATOR | COLLISION.POPCORN | COLLISION.KERNEL | COLLISION.ICE
+                }
+            });
+            droplet.isWaterDrop = true;
+            droplet.isFreezing = false;
+            return droplet;
+        }
+
+        function createIceParticle(x, y, isStatic = false) {
+            const ice = Bodies.circle(x, y, 4, {
+                isStatic: isStatic,
+                restitution: 0.4,
+                friction: 0.05,
+                density: 0.009,
+                render: { fillStyle: COLORS.ICE, strokeStyle: COLORS.WATER_DROP, lineWidth: 1 },
+                collisionFilter: {
+                    category: COLLISION.ICE,
+                    mask: COLLISION.WALL | COLLISION.REFRIGERATOR | COLLISION.POPCORN | COLLISION.KERNEL | COLLISION.ICE | COLLISION.DROPLET
+                }
+            });
+            ice.isIce = true;
+            Body.scale(ice, 1.3, 1.3);
+            return ice;
+        }
+
+        // *** REWORKED: This function now builds a single, robust compound pot ***
+        function buildBoundaries(width, height) {
+            const potParts = [];
+            const centerX = width / 2;
+            const potWidth = Math.min(width * 0.7, 500);
+            const potHeight = potWidth * 0.6;
+            const wallThickness = 20;
+            const cornerRadius = 40;
+            const bottomY = height - wallThickness;
+
+            const staticOptions = {
+                isStatic: true,
+                render: { fillStyle: COLORS.POT },
+                collisionFilter: { category: COLLISION.WALL },
+            };
+
+            // 1. Pot Bottom (Heating Element)
+            const potBottom = Bodies.rectangle(centerX, bottomY, potWidth, wallThickness, { ...staticOptions, label: 'potBottom' });
+            potBottom.temperature = AMBIENT_TEMP_INITIAL;
+            potParts.push(potBottom);
+
+            // 2. Pot Walls
+            const wallHeight = potHeight - cornerRadius;
+            const potWallLeft = Bodies.rectangle(centerX - potWidth / 2 - wallThickness / 2, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallLeft' });
+            potWallLeft.temperature = AMBIENT_TEMP_INITIAL;
+            potParts.push(potWallLeft);
+            const potWallRight = Bodies.rectangle(centerX + potWidth / 2 + wallThickness / 2, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallRight' });
+            potWallRight.temperature = AMBIENT_TEMP_INITIAL;
+            potParts.push(potWallRight);
+
+            // 3. Pot Corners (built from an arc of small segments)
+            const cornerSegments = 10;
+            const segmentAngle = (Math.PI / 2) / cornerSegments;
+            const segmentLength = (Math.PI / 2 * cornerRadius) / cornerSegments * 1.5; // Length of each segment
+
+            // Left Corner
+            for (let i = 0; i < cornerSegments; i++) {
+                const angle = Math.PI + segmentAngle * (i + 0.5);
+                const x = centerX - potWidth / 2 + cornerRadius * Math.cos(angle);
+                const y = bottomY - cornerRadius + cornerRadius * Math.sin(angle);
+                const segment = Bodies.rectangle(x, y, segmentLength, wallThickness, { ...staticOptions, angle: angle, label: `potCornerLeft_${i}` });
+                segment.temperature = AMBIENT_TEMP_INITIAL;
+                potParts.push(segment);
+            }
+
+            // Right Corner
+            for (let i = 0; i < cornerSegments; i++) {
+                const angle = (3 * Math.PI / 2) + segmentAngle * (i + 0.5);
+                const x = centerX + potWidth / 2 + cornerRadius * Math.cos(angle);
+                const y = bottomY - cornerRadius + cornerRadius * Math.sin(angle);
+                const segment = Bodies.rectangle(x, y, segmentLength, wallThickness, { ...staticOptions, angle: angle, label: `potCornerRight_${i}` });
+                segment.temperature = AMBIENT_TEMP_INITIAL;
+                potParts.push(segment);
+            }
+            
+            // 4. Fuse all parts into a single compound body
+            const pot = Body.create({
+                parts: potParts,
+                isStatic: true,
+                label: 'pot'
+            });
+
+            // Refrigerator
+            const fridgeWidth = potWidth * 1.1; 
+            const fridge = Bodies.rectangle(centerX, 80, fridgeWidth, 10, {
+                label: 'refrigerator',
+                isStatic: true, angle: 0,
+                render: { fillStyle: isRefrigeratorOn ? '#06b6d4' : COLORS.REFRIGERATOR },
+                collisionFilter: { category: COLLISION.REFRIGERATOR, mask: 0xFFFFFFFF }
+            });
+            fridge.isRefrigerator = true;
+            
+            // Outer Walls
+            const boundaryThickness = 50;
+            const outerWalls = [
+                Bodies.rectangle(width / 2, -boundaryThickness / 2, width, boundaryThickness, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(width / 2, height + boundaryThickness / 2, width, boundaryThickness, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(-boundaryThickness / 2, height / 2, boundaryThickness, height, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(width + boundaryThickness / 2, height / 2, boundaryThickness, height, { isStatic: true, render: { visible: false } })
+            ];
+
+            return [pot, fridge, ...outerWalls];
+        }
+
+        // --- Initial Setup ---
+        boundaryElements = buildBoundaries(container.clientWidth, container.clientHeight);
+        World.add(world, boundaryElements);
+
+        const initialKernels = [];
+        for (let i = 0; i < 30; i++) {
+            const centerX = container.clientWidth / 2;
+            const potWidth = Math.min(container.clientWidth * 0.7, 500);
+            const kernel = createKernel(centerX + (Math.random() - 0.5) * (potWidth - 50), 200 + Math.random() * 100);
+            initialKernels.push(kernel);
+        }
+        World.add(world, initialKernels);
+
+        // Mouse control
+        const mouse = Mouse.create(render.canvas);
+        const mouseConstraint = MouseConstraint.create(engine, { mouse: mouse, constraint: { stiffness: 0.2, render: { visible: false } } });
+        World.add(world, mouseConstraint);
+        render.mouse = mouse;
+        
+        // --- Simulation Logic ---
+        Events.on(engine, 'beforeUpdate', (event) => {
+            const allBodies = Composite.allBodies(world);
+            let totalKernelTemp = 0;
+            let unpoppedKernelCount = 0;
+            const gravity = 0.0018; 
+            const steamBuoyancy = -0.0001; 
+
+            if (steamToCondenseQueue.size > 0) {
+                steamToCondenseQueue.forEach(steamBody => {
+                    if (Composite.get(world, steamBody.id, 'body')) {
+                        Composite.remove(world, steamBody);
+                        steamParticles = steamParticles.filter(p => p.id !== steamBody.id);
+                        condensedSteamCount++;
+                    }
+                });
+                steamToCondenseQueue.clear();
+            }
+
+            if (waterToRemoveQueue.size > 0) {
+                waterToRemoveQueue.forEach(waterBody => {
+                    if (Composite.get(world, waterBody.id, 'body')) {
+                        Composite.remove(world, waterBody);
+                    }
+                });
+                waterToRemoveQueue.clear();
+            }
+
+            if (waterToFreezeQueue.size > 0) {
+                waterToFreezeQueue.forEach(item => {
+                    if (Composite.get(world, item.body.id, 'body')) {
+                        const position = { x: item.body.position.x, y: item.body.position.y };
+                        Composite.remove(world, item.body);
+                        const ice = createIceParticle(position.x, position.y, item.isStatic);
+                        Composite.add(world, ice);
+                    }
+                });
+                waterToFreezeQueue.clear();
+            }
+
+            allBodies.forEach(body => {
+                if (!body.isStatic && !body.isSteam) {
+                    Body.applyForce(body, body.position, {x: 0, y: body.mass * gravity});
+                }
+
+                if (body.isSteam) {
+                    Body.applyForce(body, body.position, {x: 0, y: steamBuoyancy * body.mass});
+                    
+                    if (body.isCondensing) {
+                        Body.scale(body, 0.97, 0.97);
+                        if (body.area < 20) {
+                            steamToCondenseQueue.add(body);
+                            body.isCondensing = false;
+                        }
+                    }
+                }
+
+                if (body.isPopped && body.isGettingWet) {
+                    Body.scale(body, 0.98, 0.98);
+                    if (body.area < 400) {
+                        body.isGettingWet = false;
+                        body.isWet = true;
+                        body.parts.forEach(part => {
+                            if (part.render.fillStyle) {
+                                part.render.fillStyle = COLORS.WET_POPCORN;
+                            }
+                        });
+                    }
+                }
+
+                if (body.isWaterDrop && body.isFreezing) {
+                    const freezeChance = -refrigeratorTemperature / 100.0;
+                    if (Math.random() < freezeChance) {
+                        waterToFreezeQueue.add({ body: body, isStatic: true });
+                        body.isFreezing = false;
+                    }
+                }
+
+                if (body.isKernel && !body.isPopped) {
+                    unpoppedKernelCount++;
+                    if (isMicrowaveOn) {
+                        body.temperature += HEATING_RATE;
+                    }
+                    totalKernelTemp += body.temperature;
+
+                    if (body.temperature >= BOILING_POINT) {
+                        body.isPopped = true;
+                        const position = { x: body.position.x, y: body.position.y };
+                        Composite.remove(world, body);
+                        
+                        const newPopcorn = createPopcorn(position.x, position.y, body.temperature);
+                        Composite.add(world, newPopcorn);
+                        
+                        const forceMagnitude = 0.05 * newPopcorn.mass;
+                        Body.applyForce(newPopcorn, newPopcorn.position, { x: (Math.random() - 0.5) * forceMagnitude, y: -Math.random() * forceMagnitude * 2 });
+
+                        const steamSpawnY = position.y - 30;
+                        for(let i = 0; i < STEAM_PER_POP; i++) {
+                            const steam = createSteam(position.x + (Math.random() - 0.5) * 15, steamSpawnY + (Math.random() - 0.5) * 10);
+                            steamParticles.push(steam);
+                            Composite.add(world, steam);
+                            Body.setVelocity(steam, { x: (Math.random() - 0.5) * 0.5, y: - (1 + Math.random() * 1.5) });
+                        }
+                    }
+                }
+                
+                if (!body.isStatic && body.temperature > ambientTemperature && !body.isSteam) {
+                    const tempDifference = body.temperature - ambientTemperature;
+                    const heatLoss = tempDifference * COOLING_RATE;
+                    body.temperature -= heatLoss;
+                    ambientTemperature += heatLoss * HEAT_TRANSFER_RATE * (body.mass / 0.01);
+                }
+            });
+
+            const now = Date.now();
+            const steamToRemoveByAge = [];
+            steamParticles.forEach(steam => {
+                const age = now - steam.createdAt;
+                if (age > STEAM_LIFESPAN_MS) {
+                    steamToRemoveByAge.push(steam);
+                } else {
+                    steam.parts.forEach((part, index) => {
+                        if (index > 0) { 
+                           part.render.opacity = 0.8 * (1 - (age / STEAM_LIFESPAN_MS));
+                        }
+                    });
+                }
+            });
+
+            steamToRemoveByAge.forEach(steam => {
+                if (Composite.get(world, steam.id, 'body')) {
+                   Composite.remove(world, steam);
+                   steamParticles = steamParticles.filter(p => p.id !== steam.id);
+                }
+            });
+            
+            if (condensedSteamCount >= STEAM_PER_POP) {
+                condensedSteamCount -= STEAM_PER_POP;
+                const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator');
+                if (fridge) {
+                    const fridgeWidth = fridge.bounds.max.x - fridge.bounds.min.x;
+                    const dropX = fridge.position.x + (Math.random() - 0.5) * fridgeWidth * 0.9;
+                    const dropY = fridge.position.y + 20;
+                    const waterDrop = createWaterDroplet(dropX, dropY);
+                    Composite.add(world, waterDrop);
+                }
+            }
+
+            const avgKernelTemp = unpoppedKernelCount > 0 ? totalKernelTemp / unpoppedKernelCount : 0;
+            updateGauges(avgKernelTemp, ambientTemperature);
+        });
+
+        Events.on(engine, 'collisionStart', (event) => {
+            event.pairs.forEach(pair => {
+                const { bodyA, bodyB } = pair;
+                
+                const findBody = (prop) => {
+                    if (bodyA[prop]) return bodyA;
+                    if (bodyB[prop]) return bodyB;
+                    if (bodyA.parent && bodyA.parent[prop]) return bodyA.parent;
+                    if (bodyB.parent && bodyB.parent[prop]) return bodyB.parent;
+                    return null;
+                };
+
+                const waterBody = findBody('isWaterDrop');
+                const fridgeBody = findBody('isRefrigerator');
+                const steamBody = findBody('isSteam');
+                const popcornBody = findBody('isPopped');
+                const iceBody = findBody('isIce');
+
+                if (isRefrigeratorOn && waterBody && fridgeBody) {
+                    waterBody.isFreezing = true;
+                }
+                if (isRefrigeratorOn && steamBody && fridgeBody) {
+                    steamBody.isCondensing = true;
+                }
+                if (waterBody && popcornBody && !popcornBody.isWet) {
+                    popcornBody.isGettingWet = true;
+                    waterToRemoveQueue.add(waterBody);
+                }
+                if (waterBody && iceBody && iceBody.isStatic) {
+                    waterToFreezeQueue.add({ body: waterBody, isStatic: true });
+                }
+            });
+        });
+
+        Events.on(engine, 'collisionEnd', (event) => {
+             event.pairs.forEach(pair => {
+                const { bodyA, bodyB } = pair;
+                const findBody = (prop) => {
+                    if (bodyA[prop]) return bodyA;
+                    if (bodyB[prop]) return bodyB;
+                    return null;
+                };
+                const waterBody = findBody('isWaterDrop');
+                const fridgeBody = findBody('isRefrigerator');
+                if (waterBody && fridgeBody) {
+                    waterBody.isFreezing = false;
+                }
+             });
+        });
+
+
+        function updateGauges(kernelTemp, ambientTemp) {
+            const kernelTempPercent = Math.min((kernelTemp / BOILING_POINT) * 100, 100);
+            kernelTempBar.style.width = `${kernelTempPercent}%`;
+            kernelTempText.textContent = `${Math.round(kernelTemp)}°`;
+            
+            const ambientTempPercent = Math.min((ambientTemp / 100) * 100, 100);
+            ambientTempBar.style.width = `${ambientTempPercent}%`;
+            ambientTempText.textContent = `${Math.round(ambientTemp)}°`;
+        }
+
+        microwaveButton.addEventListener('click', () => {
+            isMicrowaveOn = !isMicrowaveOn;
+            microwaveButton.textContent = isMicrowaveOn ? 'Microwave ON' : 'Microwave OFF';
+            microwaveButton.classList.toggle('bg-yellow-500', isMicrowaveOn);
+            microwaveButton.classList.toggle('hover:bg-yellow-600', isMicrowaveOn);
+            microwaveButton.classList.toggle('bg-gray-600', !isMicrowaveOn);
+            microwaveButton.classList.toggle('hover:bg-gray-500', !isMicrowaveOn);
+        });
+        
+        refrigeratorButton.addEventListener('click', () => {
+            isRefrigeratorOn = !isRefrigeratorOn;
+            refrigeratorButton.textContent = isRefrigeratorOn ? 'Fridge ON' : 'Fridge OFF';
+            refrigeratorButton.classList.toggle('bg-cyan-500', isRefrigeratorOn);
+            refrigeratorButton.classList.toggle('hover:bg-cyan-600', isRefrigeratorOn);
+            refrigeratorButton.classList.toggle('bg-blue-500', !isRefrigeratorOn);
+            refrigeratorButton.classList.toggle('hover:bg-blue-600', !isRefrigeratorOn);
+            
+            const fridge = Composite.allBodies(world).find(body => body.label === 'refrigerator');
+            if (fridge) {
+                fridge.render.fillStyle = isRefrigeratorOn ? '#06b6d4' : COLORS.REFRIGERATOR;
+            }
+        });
+        
+        fridgeTempSlider.addEventListener('input', (e) => {
+            refrigeratorTemperature = parseInt(e.target.value, 10);
+            fridgeTempValue.textContent = refrigeratorTemperature;
+        });
+        
+        Render.run(render);
+        const runner = Runner.create();
+        Runner.run(runner, engine);
+
+        // *** REWORKED: Resize logic now rebuilds the compound pot, fixing the bounce glitch ***
+        window.addEventListener('resize', () => {
+            render.canvas.width = container.clientWidth;
+            render.canvas.height = container.clientHeight;
+
+            // Remove all old boundaries
+            Composite.remove(world, boundaryElements);
+            
+            // Rebuild all boundaries at the new size
+            boundaryElements = buildBoundaries(container.clientWidth, container.clientHeight);
+            World.add(world, boundaryElements);
+
+            Render.setPixelRatio(render, window.devicePixelRatio);
+            Render.lookAt(render, {
+                min: { x: 0, y: 0 },
+                max: { x: container.clientWidth, y: container.clientHeight }
+            });
+        });
+    </script>
+</body>
+</html>
