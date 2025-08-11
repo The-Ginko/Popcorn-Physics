@@ -76,7 +76,7 @@
 
     <script>
         // Alias Matter.js modules
-        const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Mouse, MouseConstraint, Query, Vertices } = Matter;
+        const { Engine, Render, Runner, World, Bodies, Body, Composite, Events, Mouse, MouseConstraint, Query } = Matter;
 
         // --- Configuration ---
         const KERNEL_SIZE = 5;
@@ -90,7 +90,7 @@
         const STEAM_LIFESPAN_MS = 20000; 
 
         const COLORS = {
-            BACKGROUND: '#1f2937', POT: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
+            BACKGROUND: '#1f2937', BOWL: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
             POPCORN: '#fef3c7', STROKE: '#11182b', STEAM: 'rgba(239, 246, 255, 0.8)',
             STEAM_STROKE: 'rgba(209, 213, 219, 0.6)',
             REFRIGERATOR: '#a5f3fc', WATER_DROP: '#60a5fa',
@@ -242,9 +242,10 @@
             return droplet;
         }
 
+        // *** MODIFIED: Function now accepts an isStatic flag ***
         function createIceParticle(x, y, isStatic = false) {
             const ice = Bodies.circle(x, y, 4, {
-                isStatic: isStatic,
+                isStatic: isStatic, // Set if the ice should stick
                 restitution: 0.4,
                 friction: 0.05,
                 density: 0.009,
@@ -259,88 +260,43 @@
             return ice;
         }
 
-        // *** REWORKED: This function now builds a single, robust compound pot ***
         function buildBoundaries(width, height) {
-            const potParts = [];
             const centerX = width / 2;
-            const potWidth = Math.min(width * 0.7, 500);
-            const potHeight = potWidth * 0.6;
-            const wallThickness = 20;
-            const cornerRadius = 40;
-            const bottomY = height - wallThickness;
-
-            const staticOptions = {
+            const bowlWallThickness = 30;
+            const bowlWidth = Math.min(width * 0.6, 400);
+            const bowlHeight = bowlWidth * 0.5;
+            const bottomY = height - bowlWallThickness * 2;
+            const staticCollision = {
                 isStatic: true,
-                render: { fillStyle: COLORS.POT },
-                collisionFilter: { category: COLLISION.WALL },
+                collisionFilter: { category: COLLISION.WALL, mask: 0xFFFFFFFF },
             };
-
-            // 1. Pot Bottom (Heating Element)
-            const potBottom = Bodies.rectangle(centerX, bottomY, potWidth, wallThickness, { ...staticOptions, label: 'potBottom' });
-            potBottom.temperature = AMBIENT_TEMP_INITIAL;
-            potParts.push(potBottom);
-
-            // 2. Pot Walls
-            const wallHeight = potHeight - cornerRadius;
-            const potWallLeft = Bodies.rectangle(centerX - potWidth / 2 - wallThickness / 2, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallLeft' });
-            potWallLeft.temperature = AMBIENT_TEMP_INITIAL;
-            potParts.push(potWallLeft);
-            const potWallRight = Bodies.rectangle(centerX + potWidth / 2 + wallThickness / 2, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallRight' });
-            potWallRight.temperature = AMBIENT_TEMP_INITIAL;
-            potParts.push(potWallRight);
-
-            // 3. Pot Corners (built from an arc of small segments)
-            const cornerSegments = 10;
-            const segmentAngle = (Math.PI / 2) / cornerSegments;
-            const segmentLength = (Math.PI / 2 * cornerRadius) / cornerSegments * 1.5; // Length of each segment
-
-            // Left Corner
-            for (let i = 0; i < cornerSegments; i++) {
-                const angle = Math.PI + segmentAngle * (i + 0.5);
-                const x = centerX - potWidth / 2 + cornerRadius * Math.cos(angle);
-                const y = bottomY - cornerRadius + cornerRadius * Math.sin(angle);
-                const segment = Bodies.rectangle(x, y, segmentLength, wallThickness, { ...staticOptions, angle: angle, label: `potCornerLeft_${i}` });
-                segment.temperature = AMBIENT_TEMP_INITIAL;
-                potParts.push(segment);
-            }
-
-            // Right Corner
-            for (let i = 0; i < cornerSegments; i++) {
-                const angle = (3 * Math.PI / 2) + segmentAngle * (i + 0.5);
-                const x = centerX + potWidth / 2 + cornerRadius * Math.cos(angle);
-                const y = bottomY - cornerRadius + cornerRadius * Math.sin(angle);
-                const segment = Bodies.rectangle(x, y, segmentLength, wallThickness, { ...staticOptions, angle: angle, label: `potCornerRight_${i}` });
-                segment.temperature = AMBIENT_TEMP_INITIAL;
-                potParts.push(segment);
-            }
             
-            // 4. Fuse all parts into a single compound body
-            const pot = Body.create({
-                parts: potParts,
-                isStatic: true,
-                label: 'pot'
-            });
-
-            // Refrigerator
-            const fridgeWidth = potWidth * 1.1; 
-            const fridge = Bodies.rectangle(centerX, 80, fridgeWidth, 10, {
+            const bowlBottom = Bodies.rectangle(centerX, bottomY, bowlWidth, bowlWallThickness, { ...staticCollision, render: { fillStyle: COLORS.BOWL } });
+            const bowlLeft = Bodies.rectangle(centerX - bowlWidth / 2, bottomY - bowlHeight / 2, bowlWallThickness, bowlHeight, { ...staticCollision, angle: -Math.PI / 6, render: { fillStyle: COLORS.BOWL } });
+            const bowlRight = Bodies.rectangle(centerX + bowlWidth / 2, bottomY - bowlHeight / 2, bowlWallThickness, bowlHeight, { ...staticCollision, angle: Math.PI / 6, render: { fillStyle: COLORS.BOWL } });
+            
+            const fridgeWidth = bowlWidth * 1.1; 
+            const fridgeX = centerX - (bowlWidth * 0.1);
+            const fridge = Bodies.rectangle(fridgeX, 80, fridgeWidth, 10, {
                 label: 'refrigerator',
-                isStatic: true, angle: 0,
+                isStatic: true, angle: Math.PI / 30,
                 render: { fillStyle: isRefrigeratorOn ? '#06b6d4' : COLORS.REFRIGERATOR },
-                collisionFilter: { category: COLLISION.REFRIGERATOR, mask: 0xFFFFFFFF }
+                collisionFilter: { 
+                    category: COLLISION.REFRIGERATOR, 
+                    mask: 0xFFFFFFFF 
+                }
             });
             fridge.isRefrigerator = true;
             
-            // Outer Walls
             const boundaryThickness = 50;
-            const outerWalls = [
-                Bodies.rectangle(width / 2, -boundaryThickness / 2, width, boundaryThickness, { isStatic: true, render: { visible: false } }),
-                Bodies.rectangle(width / 2, height + boundaryThickness / 2, width, boundaryThickness, { isStatic: true, render: { visible: false } }),
-                Bodies.rectangle(-boundaryThickness / 2, height / 2, boundaryThickness, height, { isStatic: true, render: { visible: false } }),
-                Bodies.rectangle(width + boundaryThickness / 2, height / 2, boundaryThickness, height, { isStatic: true, render: { visible: false } })
+            const walls = [
+                Bodies.rectangle(width / 2, -boundaryThickness / 2, width, boundaryThickness, { ...staticCollision, render: { visible: false } }),
+                Bodies.rectangle(width / 2, height + boundaryThickness / 2, width, boundaryThickness, { ...staticCollision, render: { visible: false } }),
+                Bodies.rectangle(-boundaryThickness / 2, height / 2, boundaryThickness, height, { ...staticCollision, render: { visible: false } }),
+                Bodies.rectangle(width + boundaryThickness / 2, height / 2, boundaryThickness, height, { ...staticCollision, render: { visible: false } })
             ];
 
-            return [pot, fridge, ...outerWalls];
+            return [bowlBottom, bowlLeft, bowlRight, fridge, ...walls];
         }
 
         // --- Initial Setup ---
@@ -350,8 +306,8 @@
         const initialKernels = [];
         for (let i = 0; i < 30; i++) {
             const centerX = container.clientWidth / 2;
-            const potWidth = Math.min(container.clientWidth * 0.7, 500);
-            const kernel = createKernel(centerX + (Math.random() - 0.5) * (potWidth - 50), 200 + Math.random() * 100);
+            const bowlWidth = Math.min(container.clientWidth * 0.6, 400);
+            const kernel = createKernel(centerX + (Math.random() - 0.5) * bowlWidth * 0.8, 150 + Math.random() * 100);
             initialKernels.push(kernel);
         }
         World.add(world, initialKernels);
@@ -435,6 +391,7 @@
                 if (body.isWaterDrop && body.isFreezing) {
                     const freezeChance = -refrigeratorTemperature / 100.0;
                     if (Math.random() < freezeChance) {
+                        // For now, all fridge-contact freezes are static
                         waterToFreezeQueue.add({ body: body, isStatic: true });
                         body.isFreezing = false;
                     }
@@ -532,6 +489,7 @@
                 const popcornBody = findBody('isPopped');
                 const iceBody = findBody('isIce');
 
+                // --- Interaction Checks ---
                 if (isRefrigeratorOn && waterBody && fridgeBody) {
                     waterBody.isFreezing = true;
                 }
@@ -542,6 +500,7 @@
                     popcornBody.isGettingWet = true;
                     waterToRemoveQueue.add(waterBody);
                 }
+                // *** ADDED: Ice accumulation logic ***
                 if (waterBody && iceBody && iceBody.isStatic) {
                     waterToFreezeQueue.add({ body: waterBody, isStatic: true });
                 }
@@ -607,15 +566,11 @@
         const runner = Runner.create();
         Runner.run(runner, engine);
 
-        // *** REWORKED: Resize logic now rebuilds the compound pot, fixing the bounce glitch ***
         window.addEventListener('resize', () => {
             render.canvas.width = container.clientWidth;
             render.canvas.height = container.clientHeight;
 
-            // Remove all old boundaries
             Composite.remove(world, boundaryElements);
-            
-            // Rebuild all boundaries at the new size
             boundaryElements = buildBoundaries(container.clientWidth, container.clientHeight);
             World.add(world, boundaryElements);
 
