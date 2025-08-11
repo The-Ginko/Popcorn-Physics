@@ -90,7 +90,7 @@
         const STEAM_LIFESPAN_MS = 20000; 
 
         const COLORS = {
-            BACKGROUND: '#1f2937', BOWL: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
+            BACKGROUND: '#1f2937', POT: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
             POPCORN: '#fef3c7', STROKE: '#11182b', STEAM: 'rgba(239, 246, 255, 0.8)',
             STEAM_STROKE: 'rgba(209, 213, 219, 0.6)',
             REFRIGERATOR: '#a5f3fc', WATER_DROP: '#60a5fa',
@@ -238,14 +238,12 @@
                 }
             });
             droplet.isWaterDrop = true;
-            droplet.isFreezing = false;
             return droplet;
         }
 
-        // *** MODIFIED: Function now accepts an isStatic flag ***
         function createIceParticle(x, y, isStatic = false) {
             const ice = Bodies.circle(x, y, 4, {
-                isStatic: isStatic, // Set if the ice should stick
+                isStatic: isStatic, 
                 restitution: 0.4,
                 friction: 0.05,
                 density: 0.009,
@@ -261,43 +259,101 @@
         }
 
         function buildBoundaries(width, height) {
+            const potParts = [];
             const centerX = width / 2;
-            const bowlWallThickness = 30;
-            const bowlWidth = Math.min(width * 0.6, 400);
-            const bowlHeight = bowlWidth * 0.5;
-            const bottomY = height - bowlWallThickness * 2;
-            const staticCollision = {
+
+            // --- Hardcoded values from the debugger ---
+            const potWidth = 584;
+            const wallHeight = 200;
+            const wallXOffset = 20;
+            const leftXOffset = -30;
+            const leftArcStart = 1.68;
+            const rightXOffset = 30;
+            const rightArcStart = 6.26;
+            // --- Default values from the debugger that were not changed ---
+            const cornerYOffset = 0;
+            const leftTangent = 1.57;
+            const rightTangent = -1.57;
+            const leftThickness = 20;
+            const rightThickness = 20;
+            // --- Original variables from the simulator ---
+            const wallThickness = 20;
+            const cornerRadius = 40;
+            const bottomY = height - wallThickness;
+
+            const staticOptions = {
                 isStatic: true,
-                collisionFilter: { category: COLLISION.WALL, mask: 0xFFFFFFFF },
+                render: { fillStyle: COLORS.POT },
+                collisionFilter: { category: COLLISION.WALL },
             };
+
+            const potBottom = Bodies.rectangle(centerX, bottomY, potWidth, wallThickness, { ...staticOptions, label: 'potBottom' });
+            potBottom.temperature = AMBIENT_TEMP_INITIAL;
             
-            const bowlBottom = Bodies.rectangle(centerX, bottomY, bowlWidth, bowlWallThickness, { ...staticCollision, render: { fillStyle: COLORS.BOWL } });
-            const bowlLeft = Bodies.rectangle(centerX - bowlWidth / 2, bottomY - bowlHeight / 2, bowlWallThickness, bowlHeight, { ...staticCollision, angle: -Math.PI / 6, render: { fillStyle: COLORS.BOWL } });
-            const bowlRight = Bodies.rectangle(centerX + bowlWidth / 2, bottomY - bowlHeight / 2, bowlWallThickness, bowlHeight, { ...staticCollision, angle: Math.PI / 6, render: { fillStyle: COLORS.BOWL } });
+            const potWallLeft = Bodies.rectangle(centerX - potWidth / 2 - wallThickness / 2 - wallXOffset, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallLeft' });
+            potWallLeft.temperature = AMBIENT_TEMP_INITIAL;
             
-            const fridgeWidth = bowlWidth * 1.1; 
-            const fridgeX = centerX - (bowlWidth * 0.1);
-            const fridge = Bodies.rectangle(fridgeX, 80, fridgeWidth, 10, {
+            const potWallRight = Bodies.rectangle(centerX + potWidth / 2 + wallThickness / 2 + wallXOffset, bottomY - wallHeight / 2 - cornerRadius, wallThickness, wallHeight, { ...staticOptions, label: 'potWallRight' });
+            potWallRight.temperature = AMBIENT_TEMP_INITIAL;
+            
+            potParts.push(potBottom, potWallLeft, potWallRight);
+
+            const cornerSegments = 10;
+            const segmentAngle = (Math.PI / 2) / cornerSegments;
+            const segmentLength = (Math.PI / 2 * cornerRadius) / cornerSegments;
+            
+            const leftCornerCenterX = centerX - potWidth / 2 + cornerRadius + leftXOffset;
+            const rightCornerCenterX = centerX + potWidth / 2 - cornerRadius + rightXOffset;
+            const cornerCenterY = bottomY - cornerRadius + cornerYOffset;
+
+            // Left Corner
+            for (let i = 0; i < cornerSegments; i++) {
+                const positionAngle = leftArcStart + segmentAngle * (i + 0.5);
+                const x = leftCornerCenterX + cornerRadius * Math.cos(positionAngle);
+                const y = cornerCenterY + cornerRadius * Math.sin(positionAngle);
+                const tangentAngle = positionAngle + leftTangent;
+                const segment = Bodies.rectangle(x, y, segmentLength, leftThickness, { ...staticOptions, angle: tangentAngle, label: `potCornerLeft_${i}` });
+                segment.temperature = AMBIENT_TEMP_INITIAL;
+                potParts.push(segment);
+            }
+
+            // Right Corner
+            for (let i = 0; i < cornerSegments; i++) {
+                const positionAngle = rightArcStart + segmentAngle * (i + 0.5);
+                const x = rightCornerCenterX + cornerRadius * Math.cos(positionAngle);
+                const y = cornerCenterY + cornerRadius * Math.sin(positionAngle);
+                const tangentAngle = positionAngle + rightTangent;
+                const segment = Bodies.rectangle(x, y, segmentLength, rightThickness, { ...staticOptions, angle: tangentAngle, label: `potCornerRight_${i}` });
+                segment.temperature = AMBIENT_TEMP_INITIAL;
+                potParts.push(segment);
+            }
+            
+            const pot = Body.create({
+                parts: potParts,
+                isStatic: true,
+                label: 'pot'
+            });
+
+            // --- Re-create other original elements ---
+            const fridgeWidth = potWidth * 1.1; 
+            const fridge = Bodies.rectangle(centerX, 80, fridgeWidth, 10, {
                 label: 'refrigerator',
-                isStatic: true, angle: Math.PI / 30,
+                isStatic: true, angle: 0,
                 render: { fillStyle: isRefrigeratorOn ? '#06b6d4' : COLORS.REFRIGERATOR },
-                collisionFilter: { 
-                    category: COLLISION.REFRIGERATOR, 
-                    mask: 0xFFFFFFFF 
-                }
+                collisionFilter: { category: COLLISION.REFRIGERATOR, mask: 0xFFFFFFFF }
             });
             fridge.isRefrigerator = true;
             
-            const boundaryThickness = 50;
-            const walls = [
-                Bodies.rectangle(width / 2, -boundaryThickness / 2, width, boundaryThickness, { ...staticCollision, render: { visible: false } }),
-                Bodies.rectangle(width / 2, height + boundaryThickness / 2, width, boundaryThickness, { ...staticCollision, render: { visible: false } }),
-                Bodies.rectangle(-boundaryThickness / 2, height / 2, boundaryThickness, height, { ...staticCollision, render: { visible: false } }),
-                Bodies.rectangle(width + boundaryThickness / 2, height / 2, boundaryThickness, height, { ...staticCollision, render: { visible: false } })
+            const outerWalls = [
+                Bodies.rectangle(width / 2, -50, width, 100, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(width / 2, height + 50, width, 100, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(-50, height / 2, 100, height, { isStatic: true, render: { visible: false } }),
+                Bodies.rectangle(width + 50, height / 2, 100, height, { isStatic: true, render: { visible: false } })
             ];
 
-            return [bowlBottom, bowlLeft, bowlRight, fridge, ...walls];
+            return [pot, fridge, ...outerWalls];
         }
+
 
         // --- Initial Setup ---
         boundaryElements = buildBoundaries(container.clientWidth, container.clientHeight);
@@ -347,11 +403,11 @@
             }
 
             if (waterToFreezeQueue.size > 0) {
-                waterToFreezeQueue.forEach(item => {
-                    if (Composite.get(world, item.body.id, 'body')) {
-                        const position = { x: item.body.position.x, y: item.body.position.y };
-                        Composite.remove(world, item.body);
-                        const ice = createIceParticle(position.x, position.y, item.isStatic);
+                waterToFreezeQueue.forEach(waterBody => {
+                    if (Composite.get(world, waterBody.id, 'body')) {
+                        const position = { x: waterBody.position.x, y: waterBody.position.y };
+                        Composite.remove(world, waterBody);
+                        const ice = createIceParticle(position.x, position.y, true);
                         Composite.add(world, ice);
                     }
                 });
@@ -385,15 +441,6 @@
                                 part.render.fillStyle = COLORS.WET_POPCORN;
                             }
                         });
-                    }
-                }
-
-                if (body.isWaterDrop && body.isFreezing) {
-                    const freezeChance = -refrigeratorTemperature / 100.0;
-                    if (Math.random() < freezeChance) {
-                        // For now, all fridge-contact freezes are static
-                        waterToFreezeQueue.add({ body: body, isStatic: true });
-                        body.isFreezing = false;
                     }
                 }
 
@@ -484,15 +531,10 @@
                 };
 
                 const waterBody = findBody('isWaterDrop');
-                const fridgeBody = findBody('isRefrigerator');
                 const steamBody = findBody('isSteam');
                 const popcornBody = findBody('isPopped');
-                const iceBody = findBody('isIce');
+                const fridgeBody = findBody('isRefrigerator');
 
-                // --- Interaction Checks ---
-                if (isRefrigeratorOn && waterBody && fridgeBody) {
-                    waterBody.isFreezing = true;
-                }
                 if (isRefrigeratorOn && steamBody && fridgeBody) {
                     steamBody.isCondensing = true;
                 }
@@ -500,29 +542,40 @@
                     popcornBody.isGettingWet = true;
                     waterToRemoveQueue.add(waterBody);
                 }
-                // *** ADDED: Ice accumulation logic ***
-                if (waterBody && iceBody && iceBody.isStatic) {
-                    waterToFreezeQueue.add({ body: waterBody, isStatic: true });
-                }
             });
         });
 
-        Events.on(engine, 'collisionEnd', (event) => {
-             event.pairs.forEach(pair => {
+        Events.on(engine, 'collisionActive', (event) => {
+            event.pairs.forEach(pair => {
                 const { bodyA, bodyB } = pair;
                 const findBody = (prop) => {
                     if (bodyA[prop]) return bodyA;
                     if (bodyB[prop]) return bodyB;
+                    if (bodyA.parent && bodyA.parent[prop]) return bodyA.parent;
+                    if (bodyB.parent && bodyB.parent[prop]) return bodyB.parent;
                     return null;
                 };
-                const waterBody = findBody('isWaterDrop');
-                const fridgeBody = findBody('isRefrigerator');
-                if (waterBody && fridgeBody) {
-                    waterBody.isFreezing = false;
-                }
-             });
-        });
 
+                const waterBody = findBody('isWaterDrop');
+                if (!waterBody) return;
+
+                const fridgeBody = findBody('isRefrigerator');
+                const iceBody = findBody('isIce');
+
+                const shouldAttemptFreeze = (isRefrigeratorOn && fridgeBody) || (iceBody && iceBody.isStatic);
+
+                if (shouldAttemptFreeze) {
+                    if (waterToFreezeQueue.has(waterBody) || waterToRemoveQueue.has(waterBody)) {
+                        return;
+                    }
+                    
+                    const freezeChance = -refrigeratorTemperature / 100.0;
+                    if (Math.random() < freezeChance) {
+                        waterToFreezeQueue.add(waterBody);
+                    }
+                }
+            });
+        });
 
         function updateGauges(kernelTemp, ambientTemp) {
             const kernelTempPercent = Math.min((kernelTemp / BOILING_POINT) * 100, 100);
