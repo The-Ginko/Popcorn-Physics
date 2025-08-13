@@ -92,10 +92,10 @@
         const COLORS = {
             BACKGROUND: '#1f2937', POT: '#4b5563', CORN: '#facc15', WATER_COLD: '#3b82f6',
             POPCORN: '#fef3c7', STROKE: '#11182b', STEAM: 'rgba(239, 246, 255, 0.8)',
-            STEAM_STROKE: 'rgba(209, 213, 219, 0.6)',
-            REFRIGERATOR: '#a5f3fc', WATER_DROP: '#60a5fa',
+            STEAM_STROKE: 'rgba(209, 213, 219, 0.6)', // Darker blue for water droplets
+            REFRIGERATOR: '#a5f3fc', WATER_DROP: '#60a5fa', // Yellow for water droplets
             WET_POPCORN: '#d97706',
-            ICE: '#e0f2fe'
+            ICE: '#e0f2ff'
         };
         
         const COLLISION = {
@@ -148,6 +148,7 @@
         function createKernel(x, y) {
             const kernel = Body.create({ 
                 parts: [
+                    // check to see if this has anything to do with why freezing doesn't work
                     Bodies.rectangle(x, y, KERNEL_SIZE * 3, KERNEL_SIZE * 3, { isSensor: true, render: { visible: false } }),
                     ...Array.from({length: 9}, (_, i) => {
                         const row = Math.floor(i / 3) - 1;
@@ -247,7 +248,7 @@
                 restitution: 0.4,
                 friction: 0.05,
                 density: 0.009,
-                render: { fillStyle: COLORS.ICE, strokeStyle: COLORS.WATER_DROP, lineWidth: 1 },
+                render: { fillStyle: COLORS.ICE, strokeStyle: COLORS.WATER_DROP, lineWidth: 2 },
                 collisionFilter: {
                     category: COLLISION.ICE,
                     mask: COLLISION.WALL | COLLISION.REFRIGERATOR | COLLISION.POPCORN | COLLISION.KERNEL | COLLISION.ICE | COLLISION.DROPLET
@@ -255,6 +256,7 @@
             });
             ice.isIce = true;
             Body.scale(ice, 1.3, 1.3);
+            ice.temperature = -1; // Initialize ice temperature just below freezing
             return ice;
         }
 
@@ -367,6 +369,32 @@
             initialKernels.push(kernel);
         }
         World.add(world, initialKernels);
+        
+        // Add some initial ice on the refrigerator
+        const fridge = boundaryElements.find(b => b.label === 'refrigerator');
+        if (fridge) {
+            const fridgeTopY = fridge.bounds.min.y;
+            for (let i = 0; i < 5; i++) {
+                World.add(world, createIceParticle(fridge.position.x + (i - 2) * 10, fridgeTopY - 10, true)); // Keep initial ice static
+            }
+        }
+        
+        // Add some initial water on the refrigerator for diagnostic purposes
+        if (fridge) {
+            const fridgeTopY = fridge.bounds.min.y;
+            for (let i = 0; i < 5; i++) {
+                World.add(world, createWaterDroplet(fridge.position.x + (i - 2) * 10 + 5, fridgeTopY - 10)); // Offset slightly from ice
+            }
+        }
+
+    
+        // TheGinko added this manually
+        if (fridge) {
+            const fridgeTopY = fridge.bounds.min.y;
+            for (let i = 0; i < 5; i++) {
+                World.add(world, createIceParticle(fridge.position.x + (i - 2) * 10 + 10, fridgeTopY - 10, false)); // Offset slightly
+            }
+        }
 
         // Mouse control
         const mouse = Mouse.create(render.canvas);
@@ -382,54 +410,30 @@
             const gravity = 0.0018; 
             const steamBuoyancy = -0.0001; 
 
-            if (steamToCondenseQueue.size > 0) {
-                steamToCondenseQueue.forEach(steamBody => {
-                    if (Composite.get(world, steamBody.id, 'body')) {
-                        Composite.remove(world, steamBody);
-                        steamParticles = steamParticles.filter(p => p.id !== steamBody.id);
-                        condensedSteamCount++;
-                    }
-                });
-                steamToCondenseQueue.clear();
-            }
-
-            if (waterToRemoveQueue.size > 0) {
-                waterToRemoveQueue.forEach(waterBody => {
-                    if (Composite.get(world, waterBody.id, 'body')) {
-                        Composite.remove(world, waterBody);
-                    }
-                });
-                waterToRemoveQueue.clear();
-            }
-
-            if (waterToFreezeQueue.size > 0) {
-                waterToFreezeQueue.forEach(waterBody => {
-                    if (Composite.get(world, waterBody.id, 'body')) {
-                        const position = { x: waterBody.position.x, y: waterBody.position.y };
-                        Composite.remove(world, waterBody);
-                        const ice = createIceParticle(position.x, position.y, true);
-                        Composite.add(world, ice);
-                    }
-                });
-                waterToFreezeQueue.clear();
-            }
-
             allBodies.forEach(body => {
                 if (!body.isStatic && !body.isSteam) {
-                    Body.applyForce(body, body.position, {x: 0, y: body.mass * gravity});
-                }
+        let currentGravity = gravity;
+        const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator'); // Ensure fridge is accessible in this scope
+        if (fridge) {
+            // Apply reduced gravity to water droplets and non-static ice near the cold fridge
+            if ((body.isWaterDrop || (body.isIce && !body.isStatic)) && isRefrigeratorOn && refrigeratorTemperature < 0) {
+                 // Check if vertically near the fridge (adjust range if needed)
+                 if (body.position.y < fridge.position.y + 20 && body.position.y > fridge.position.y - 20) {
+                     currentGravity = gravity * 0.1; // Reduced gravity (1/10th)
+                 }
+            }
+        }
+        Body.applyForce(body, body.position, {x: 0, y: body.mass * currentGravity}); // Apply the determined gravity
+    }
 
                 if (body.isSteam) {
                     Body.applyForce(body, body.position, {x: 0, y: steamBuoyancy * body.mass});
                     
-                    if (body.isCondensing) {
-                        Body.scale(body, 0.97, 0.97);
-                        if (body.area < 20) {
-                            steamToCondenseQueue.add(body);
-                            body.isCondensing = false;
-                        }
-                    }
+
+                if (body.isCondensing) {
+                    const scalingFactor = 0.97 - Math.abs(refrigeratorTemperature) * 0.0003; // Temperature-influenced scaling
                 }
+            }
 
                 if (body.isPopped && body.isGettingWet) {
                     Body.scale(body, 0.98, 0.98);
@@ -480,15 +484,27 @@
                 }
             });
 
-            const now = Date.now();
+            // --- Ice Melting Logic ---
+            const iceToMelt = [];
+            allBodies.forEach(body => {
+                if (body.isIce && body.isStatic && (!isRefrigeratorOn || body.temperature > 0)) {
+                     iceToMelt.push(body);
+                }
+            });
+            iceToMelt.forEach(iceBody => {
+                const position = { x: iceBody.position.x, y: iceBody.position.y };
+
+            // Handle steam that fades away without hitting the cold fridge transitioning to water
             const steamToRemoveByAge = [];
+            const now = Date.now();
             steamParticles.forEach(steam => {
                 const age = now - steam.createdAt;
                 if (age > STEAM_LIFESPAN_MS) {
-                    steamToRemoveByAge.push(steam);
+                     steamToRemoveByAge.push(steam);
                 } else {
+                    // Existing opacity logic for fading steam
                     steam.parts.forEach((part, index) => {
-                        if (index > 0) { 
+                        if (index > 0) {
                            part.render.opacity = 0.8 * (1 - (age / STEAM_LIFESPAN_MS));
                         }
                     });
@@ -497,22 +513,75 @@
 
             steamToRemoveByAge.forEach(steam => {
                 if (Composite.get(world, steam.id, 'body')) {
+                   const position = { x: steam.position.x, y: steam.position.y };
                    Composite.remove(world, steam);
                    steamParticles = steamParticles.filter(p => p.id !== steam.id);
+
+                   // Create a water droplet at the position of faded steam (if it didn't condense to ice)
+                   if (!steam.isCondensing) { // Only create water if it wasn't condensing on fridge
+                       const waterDrop = createWaterDroplet(position.x, position.y);
+                       Composite.add(world, waterDrop);
+                   }
                 }
             });
-            
-            if (condensedSteamCount >= STEAM_PER_POP) {
-                condensedSteamCount -= STEAM_PER_POP;
-                const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator');
-                if (fridge) {
-                    const fridgeWidth = fridge.bounds.max.x - fridge.bounds.min.x;
-                    const dropX = fridge.position.x + (Math.random() - 0.5) * fridgeWidth * 0.9;
-                    const dropY = fridge.position.y + 20;
-                    const waterDrop = createWaterDroplet(dropX, dropY);
-                    Composite.add(world, waterDrop);
+
+            // Handle condensing steam transitioning to ice (Deposition)
+            const steamToIce = [];
+            allBodies.forEach(body => {
+                // Check for condensing steam reaching the threshold size
+                if (body.isSteam && body.isCondensing && body.area < 20) { // Using the same area threshold as water condensation
+                    steamToIce.push(body);
                 }
-            }
+            });
+            steamToIce.forEach(steamBody => {
+                 const position = { x: steamBody.position.x, y: steamBody.position.y };
+                 Composite.remove(world, steamBody);
+                 // Create a non-static ice particle (snow) at the steam's position
+                 Composite.add(world, createIceParticle(position.x, position.y, false));
+            });
+
+            // Apply reduced gravity to non-static ice (Simulating snow)
+            const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator'); // Ensure fridge is accessible
+            allBodies.forEach(body => {
+                if (body.isIce && !body.isStatic && isRefrigeratorOn && refrigeratorTemperature < 0 && fridge) {
+                    // Check if vertically near the fridge (adjust range if needed)
+                     if (body.position.y < fridge.position.y + 20 && body.position.y > fridge.position.y - 20) {
+                         Body.applyForce(body, body.position, {x: 0, y: body.mass * gravity * 0.1}); // Apply reduced gravity (1/10th)
+                     }
+                }
+            });
+
+            // Handle non-static ice becoming static on the cold fridge (Frost/Ice Accumulation)
+            if (isRefrigeratorOn && refrigeratorTemperature < 0 && fridge) {
+                Composite.remove(world, iceBody); // Remove the melting ice
+                const waterDrop = createWaterDroplet(position.x, position.y); // Create non-static water droplet
+                Composite.add(world, waterDrop);
+            };
+
+            // Handle water turning into ice when cold enough (Freezing)
+            waterToFreezeQueue.forEach(waterBody => {
+                // Before removing, ensure the water body still exists in the world
+                 if (Composite.get(world, waterBody.id, 'body')) {
+                    const position = { x: waterBody.position.x, y: waterBody.position.y };
+                    Composite.remove(world, waterBody); // Remove the water droplet
+                    const newIce = createIceParticle(position.x, position.y, false); // Create non-static ice (snow)
+                    Composite.add(world, newIce);
+                 }
+            });
+            waterToFreezeQueue.clear(); // Clear the queue after processing
+
+            // Handle water droplets that hit popcorn and are removed
+            waterToRemoveQueue.forEach(waterBody => {
+                // Before removing, ensure the water body still exists in the world
+                if (Composite.get(world, waterBody.id, 'body')) {
+                    Composite.remove(world, waterBody); // Remove the water droplet
+                }
+            });
+            waterToRemoveQueue.clear(); // Clear the queue after processing
+
+             
+            });
+
 
             const avgKernelTemp = unpoppedKernelCount > 0 ? totalKernelTemp / unpoppedKernelCount : 0;
             updateGauges(avgKernelTemp, ambientTemperature);
