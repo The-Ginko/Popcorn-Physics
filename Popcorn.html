@@ -412,28 +412,27 @@
 
             allBodies.forEach(body => {
                 if (!body.isStatic && !body.isSteam) {
-        let currentGravity = gravity;
-        const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator'); // Ensure fridge is accessible in this scope
-        if (fridge) {
-            // Apply reduced gravity to water droplets and non-static ice near the cold fridge
-            if ((body.isWaterDrop || (body.isIce && !body.isStatic)) && isRefrigeratorOn && refrigeratorTemperature < 0) {
-                 // Check if vertically near the fridge (adjust range if needed)
-                 if (body.position.y < fridge.position.y + 20 && body.position.y > fridge.position.y - 20) {
-                     currentGravity = gravity * 0.1; // Reduced gravity (1/10th)
-                 }
-            }
-        }
-        Body.applyForce(body, body.position, {x: 0, y: body.mass * currentGravity}); // Apply the determined gravity
-    }
+                    let currentGravity = gravity;
+                    const fridgeBody = Composite.allBodies(world).find(b => b.label === 'refrigerator'); // Ensure fridge is accessible in this scope
+                    if (fridgeBody) {
+                        // Apply reduced gravity to water droplets and non-static ice near the cold fridge
+                        if ((body.isWaterDrop || (body.isIce && !body.isStatic)) && isRefrigeratorOn && refrigeratorTemperature < 0) {
+                             // Check if vertically near the fridge (adjust range if needed)
+                             if (body.position.y < fridgeBody.position.y + 20 && body.position.y > fridgeBody.position.y - 20) {
+                                 currentGravity = gravity * 0.1; // Reduced gravity (1/10th)
+                             }
+                        }
+                    }
+                    Body.applyForce(body, body.position, {x: 0, y: body.mass * currentGravity}); // Apply the determined gravity
+                }
 
                 if (body.isSteam) {
                     Body.applyForce(body, body.position, {x: 0, y: steamBuoyancy * body.mass});
                     
-
-                if (body.isCondensing) {
-                    const scalingFactor = 0.97 - Math.abs(refrigeratorTemperature) * 0.0003; // Temperature-influenced scaling
+                    if (body.isCondensing) {
+                        const scalingFactor = 0.97 - Math.abs(refrigeratorTemperature) * 0.0003; // Temperature-influenced scaling
+                    }
                 }
-            }
 
                 if (body.isPopped && body.isGettingWet) {
                     Body.scale(body, 0.98, 0.98);
@@ -493,6 +492,10 @@
             });
             iceToMelt.forEach(iceBody => {
                 const position = { x: iceBody.position.x, y: iceBody.position.y };
+                Composite.remove(world, iceBody); // Remove the melting ice
+                const waterDrop = createWaterDroplet(position.x, position.y); // Create non-static water droplet
+                Composite.add(world, waterDrop);
+            });
 
             // Handle steam that fades away without hitting the cold fridge transitioning to water
             const steamToRemoveByAge = [];
@@ -500,7 +503,7 @@
             steamParticles.forEach(steam => {
                 const age = now - steam.createdAt;
                 if (age > STEAM_LIFESPAN_MS) {
-                     steamToRemoveByAge.push(steam);
+                    steamToRemoveByAge.push(steam);
                 } else {
                     // Existing opacity logic for fading steam
                     steam.parts.forEach((part, index) => {
@@ -540,23 +543,17 @@
                  Composite.add(world, createIceParticle(position.x, position.y, false));
             });
 
-            // Apply reduced gravity to non-static ice (Simulating snow)
-            const fridge = Composite.allBodies(world).find(b => b.label === 'refrigerator'); // Ensure fridge is accessible
-            allBodies.forEach(body => {
-                if (body.isIce && !body.isStatic && isRefrigeratorOn && refrigeratorTemperature < 0 && fridge) {
-                    // Check if vertically near the fridge (adjust range if needed)
-                     if (body.position.y < fridge.position.y + 20 && body.position.y > fridge.position.y - 20) {
-                         Body.applyForce(body, body.position, {x: 0, y: body.mass * gravity * 0.1}); // Apply reduced gravity (1/10th)
-                     }
-                }
-            });
-
             // Handle non-static ice becoming static on the cold fridge (Frost/Ice Accumulation)
-            if (isRefrigeratorOn && refrigeratorTemperature < 0 && fridge) {
-                Composite.remove(world, iceBody); // Remove the melting ice
-                const waterDrop = createWaterDroplet(position.x, position.y); // Create non-static water droplet
-                Composite.add(world, waterDrop);
-            };
+            const fridgeBody = Composite.allBodies(world).find(b => b.label === 'refrigerator');
+            if (isRefrigeratorOn && refrigeratorTemperature < 0 && fridgeBody) {
+                allBodies.forEach(body => {
+                    if (body.isIce && !body.isStatic && Query.collides(body, [fridgeBody]).length > 0) {
+                        // Check for collision with the fridge
+                        Body.setStatic(body, true); // Make the ice static
+                        body.render.fillStyle = COLORS.ICE; // Ensure it has the ice color
+                    }
+                });
+            }
 
             // Handle water turning into ice when cold enough (Freezing)
             waterToFreezeQueue.forEach(waterBody => {
@@ -578,10 +575,6 @@
                 }
             });
             waterToRemoveQueue.clear(); // Clear the queue after processing
-
-             
-            });
-
 
             const avgKernelTemp = unpoppedKernelCount > 0 ? totalKernelTemp / unpoppedKernelCount : 0;
             updateGauges(avgKernelTemp, ambientTemperature);
